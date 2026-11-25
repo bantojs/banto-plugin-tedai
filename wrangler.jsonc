@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "banto-plugin-tedai",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-01",
+  // fetch を公開のインターネットと同じ道で出す。無いと、同じ Cloudflare アカウントの Banto への fetch が error 1042 で届かない
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // 画面（変数とシークレット）で入れた値を、デプロイのたびに消さない
+  "keep_vars": true,
+  // wrangler 自身の利用状況を Cloudflare に送らない（手代はテレメトリを入れない。ビルドのログの「Cloudflare collects anonymous telemetry」を止める）
+  "send_metrics": false,
+  // 手代のデータ（会員 ID・注文 ID・商品 ID・数・時刻、ルール、送った記録）。個人情報は置かない。
+  // database_id を書かなければ、最初のデプロイで Cloudflare が作る。表は Worker が最初の要求で作る（src/store/migrations.ts）
+  "d1_databases": [{ "binding": "DB", "database_name": "banto-plugin-tedai" }],
+  // 5 分ごと: 待ちの列・取りこぼしの確かめ・古い記録の掃除
+  "triggers": { "crons": ["*/5 * * * *"] },
+  // ログ（Workers Logs）。自分の Cloudflare アカウントに数日だけ残る（開発チームには届かない）。
+  // ここに書かないと、ダッシュボードで ON にしてもデプロイのたびに OFF に戻る。要らなければ false にする
+  "observability": { "enabled": true, "logs": { "invocation_logs": true } }
+  // BANTO_URL は変数、TEDAI_SECRET はシークレットで入れる（README の「置き方」）
+}
