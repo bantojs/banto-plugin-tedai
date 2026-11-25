@@ -1,20 +1,23 @@
 /**
  * 取引の知らせを送る。出来事を受け取ったら列に積み（src/events.ts）、受け取りの応答の後と Cron（5 分ごと）で送る。
- * - 宛先・お名前は送る直前に Banto（orders:pii）から読み、この中だけで使う（D1 に置かない。記録には注文 ID と番号だけ）
+ * - 宛先・お名前は送る直前に Banto（orders:contact）から読み、この中だけで使う（D1 に置かない。記録には注文 ID と番号だけ）
  * - 同じ注文 × 種類は 1 回（列の主キー）。Resend には Idempotency-Key も付ける
+ * - お店で試着の知らせは、列の order_id に申し込みの ID（延長は延長の回数を足したもの）、order_number に受付番号を置き、
+ *   送る直前に受付番号で申し込みを読む（src/notices/tryon.ts）
  * - 失敗は 5・10・20・40 分後にやり直し、5 回で failed（画面から送り直せる）
  */
 import { BantoError } from "../banto/client";
 import { BudgetExceeded } from "../budget";
 import type { Deps } from "../deps";
-import { composeHtmlMail, footerText, type MailDesign, type MailFooter } from "../mail/html";
+import { composeHtmlMail, footerText, type MailDesign, type MailFooter, type Slots } from "../mail/html";
 import { MailAddressError } from "../mail/message";
 import { MailError, MailMaybeSent, mailer, permanentMailError, redactAddresses } from "../mail/transport";
 import { ConnectionRepo, type Connection } from "../store/connections";
 import { dueNotices, finishNotice, listTemplates, type NoticeSendRow } from "../store/notices";
 import { getSettings, type ShopSettings } from "../store/settings";
-import { defaultTemplate, NOTICE_SLOTS, type NoticeKind, type NoticeTemplate } from "./kinds";
-import { getOrderView, orderSlots, paymentLabel, yen, type OrderView } from "./order";
+import { defaultTemplate, noticeGroup, NOTICE_SLOTS, type NoticeKind, type NoticeTemplate } from "./kinds";
+import { getOrderView, orderSlots, paymentLabel, SAMPLE_ORDER, yen, type OrderView } from "./order";
+import { getStoreView, getTryonView, SAMPLE_STORE, SAMPLE_TRYON, todayJst, tryonSlots, tryonValues, type StoreView, type TryonView } from "./tryon";
 
 export const MAX_NOTICE_ATTEMPTS = 5;
 
@@ -30,9 +33,25 @@ export function noticeFooter(s: ShopSettings): MailFooter {
   };
 }
 
+/** 差し込みの値とかたまりから、件名・文字だけの版・（飾りありなら）HTML を作る（注文と試着で共通） */
+function composeWith(t: NoticeTemplate, values: Record<string, string>, slots: Slots, ctx: { shopName: string; settings: ShopSettings }): { subject: string; text: string; html?: string } {
+  const s = ctx.settings;
+  const fill = (text: string, extra: Record<string, string> = {}) => text.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (all, k: string) => (k in extra ? extra[k]! : k in values ? values[k]! : all));
+  const subject = fill(t.subject).replace(/[\r\n]+/g, " ").slice(0, 200);
+  const footer = noticeFooter(s);
+  if (t.format === "html") {
+    const design: MailDesign = { accent: s.mail_accent, logoUrl: s.mail_logo_url, shopName: ctx.shopName };
+    const { html, text } = composeHtmlMail({ subject, source: t.body, values, design, footer, slots });
+    return { subject, text, html };
+  }
+  const textSlots = Object.fromEntries(Object.entries(slots).map(([n, v]) => [n, v.text]));
+  return { subject, text: `${fill(t.body, textSlots)}\n${footerText(footer)}\n` };
+}
+
+const contactOf = (s: ShopSettings) => s.sender_contact || s.reply_to || "";
+
 /** 文面と注文から、件名・文字だけの版・（飾りありなら）HTML を作る */
 export function composeNotice(t: NoticeTemplate, o: OrderView, ctx: { shopName: string; orderUrl: string; settings: ShopSettings }): { subject: string; text: string; html?: string } {
-  const s = ctx.settings;
   const values: Record<string, string> = {
     name: o.name ?? "お客様",
     shop: ctx.shopName,
@@ -40,19 +59,27 @@ export function composeNotice(t: NoticeTemplate, o: OrderView, ctx: { shopName: 
     order_total: yen(o.total_jpy),
     order_url: ctx.orderUrl,
     payment_method: paymentLabel(o),
-    contact: s.sender_contact || s.reply_to || "",
+    contact: contactOf(ctx.settings),
   };
-  const fill = (text: string, extra: Record<string, string> = {}) => text.replace(/\{\{\s*([a-z_]+)\s*\}\}/g, (all, k: string) => (k in extra ? extra[k]! : k in values ? values[k]! : all));
-  const subject = fill(t.subject).replace(/[\r\n]+/g, " ").slice(0, 200);
-  const slots = orderSlots(o, ctx.orderUrl);
-  const footer = noticeFooter(s);
-  if (t.format === "html") {
-    const design: MailDesign = { accent: s.mail_accent, logoUrl: s.mail_logo_url, shopName: ctx.shopName };
-    const { html, text } = composeHtmlMail({ subject, source: t.body, values, design, footer, slots });
-    return { subject, text, html };
+  const all = orderSlots(o, ctx.orderUrl);
+  return composeWith(t, values, Object.fromEntries(NOTICE_SLOTS.map((n) => [n, all[n] ?? { html: "", text: "" }])), ctx);
+}
+
+/** お店のトップ（Banto。独自ドメインのショップなら Banto がそのドメインへ移す） */
+export const shopUrl = (bantoOrigin: string, shopSlug: string) => `${bantoOrigin}/${encodeURIComponent(shopSlug)}`;
+
+/** 文面と試着の申し込みから、件名・文字だけの版・（飾りありなら）HTML を作る */
+export function composeTryonNotice(t: NoticeTemplate, r: TryonView, store: StoreView | null, ctx: { shopName: string; shopUrl: string; settings: ShopSettings; today: string }): { subject: string; text: string; html?: string } {
+  const values: Record<string, string> = { name: r.name ?? "お客様", shop: ctx.shopName, contact: contactOf(ctx.settings), shop_url: ctx.shopUrl, ...tryonValues(r) };
+  return composeWith(t, values, tryonSlots(r, store, ctx.today), ctx);
+}
+
+/** 見本の注文・申し込みで作る（画面の見本と試し送り） */
+export function sampleNotice(t: NoticeTemplate, ctx: { shopName: string; shopSlug: string; bantoOrigin: string; settings: ShopSettings; now: number }): { subject: string; text: string; html?: string } {
+  if (noticeGroup(t.kind) === "tryon") {
+    return composeTryonNotice(t, SAMPLE_TRYON, SAMPLE_STORE, { shopName: ctx.shopName, shopUrl: shopUrl(ctx.bantoOrigin, ctx.shopSlug), settings: ctx.settings, today: todayJst(ctx.now) });
   }
-  const textSlots = Object.fromEntries(NOTICE_SLOTS.map((n) => [n, slots[n]?.text ?? ""]));
-  return { subject, text: `${fill(t.body, textSlots)}\n${footerText(footer)}\n` };
+  return composeNotice(t, SAMPLE_ORDER, { shopName: ctx.shopName, orderUrl: orderUrl(ctx.bantoOrigin, ctx.shopSlug, SAMPLE_ORDER), settings: ctx.settings });
 }
 
 class Terminal extends Error {
@@ -92,18 +119,7 @@ async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ 
   if (!deps.config.mail) throw new Error("mail_not_configured");
   if (!settings.mail_from) throw new Error("mail_from_missing");
   if (!ctx.token) throw new Error("token_unavailable");
-  let o: OrderView | null;
-  try {
-    o = await getOrderView(deps, ctx.token, row.order_id);
-  } catch (e) {
-    if (e instanceof BantoError && e.status === 404) throw new Terminal("skipped", "order_not_found");
-    throw e;
-  }
-  if (!o) throw new Error("order_unreadable");
-  // orders:pii が無いつなぎ方（前の版の手代でつないだ）。つなぎ直すまで宛先が分からない
-  if (!o.pii) throw new Terminal("failed", "no_pii");
-  if (!o.email) throw new Terminal("skipped", "no_email");
-  const mail = composeNotice(t, o, { shopName: ctx.conn.shop_name, orderUrl: orderUrl(deps.config.bantoOrigin, ctx.conn.shop_slug, o), settings });
+  const built = noticeGroup(row.kind) === "tryon" ? await buildTryon(deps, ctx, ctx.token, t, row) : await buildOrder(deps, ctx, ctx.token, t, row);
   const transport = deps.config.mail.transport;
   // SMTP には重なりを防ぐ鍵が無い: 送り始める前に印を残す（送っている途中で Worker が切れたら、取り直しで送り直さない）
   if (transport === "smtp") {
@@ -114,9 +130,9 @@ async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ 
     await m.send({
       shop: { slug: ctx.conn.shop_slug, id: ctx.conn.shop_id },
       from: settings.mail_from,
-      to: o.email,
+      to: built.to,
       ...(settings.reply_to ? { replyTo: settings.reply_to } : {}),
-      ...mail,
+      ...built.mail,
       idempotencyKey: `tedai-n-${row.shop_id}-${row.order_id}-${row.kind}`,
     });
   } catch (e) {
@@ -128,7 +144,49 @@ async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ 
     if (e instanceof MailError && permanentMailError(transport, e.status)) throw new Terminal("failed", "rejected", `${transport} ${e.status}`);
     throw e;
   }
-  return { result: "sent", order_number: o.number };
+  return { result: "sent", order_number: built.number };
+}
+
+type Built = { to: string; number: number; mail: { subject: string; text: string; html?: string } };
+
+async function buildOrder(deps: Deps, ctx: ShopCtx, token: string, t: NoticeTemplate, row: NoticeSendRow): Promise<Built> {
+  let o: OrderView | null;
+  try {
+    o = await getOrderView(deps, token, row.order_id);
+  } catch (e) {
+    if (e instanceof BantoError && e.status === 404) throw new Terminal("skipped", "order_not_found");
+    throw e;
+  }
+  if (!o) throw new Error("order_unreadable");
+  // orders:pii が無いつなぎ方（前の版の手代でつないだ）。つなぎ直すまで宛先が分からない
+  if (!o.pii) throw new Terminal("failed", "no_pii");
+  if (!o.email) throw new Terminal("skipped", "no_email");
+  return { to: o.email, number: o.number, mail: composeNotice(t, o, { shopName: ctx.conn.shop_name, orderUrl: orderUrl(deps.config.bantoOrigin, ctx.conn.shop_slug, o), settings: ctx.settings }) };
+}
+
+async function buildTryon(deps: Deps, ctx: ShopCtx, token: string, t: NoticeTemplate, row: NoticeSendRow): Promise<Built> {
+  // 受付番号は積んだときに hooks から置いた（無ければ読めない）
+  if (!row.order_number) throw new Terminal("skipped", "tryon_not_found");
+  let r: TryonView | null;
+  try {
+    r = await getTryonView(deps, token, row.order_number);
+  } catch (e) {
+    // 404: 申し込みが無い・お店で試着を OFF にした。403: 古い Banto（試着の API が無い）
+    if (e instanceof BantoError && (e.status === 404 || e.status === 403)) throw new Terminal("skipped", "tryon_not_found");
+    throw e;
+  }
+  if (!r) throw new Error("tryon_unreadable");
+  if (!r.pii) throw new Terminal("failed", "no_pii");
+  if (!r.email) throw new Terminal("skipped", "no_email");
+  // 積んだ後に状態が変わった（取り置きの前に取り消した など）。古い知らせは送らない
+  if (row.kind !== "tryon_requested" && row.kind !== "tryon_cancelled" && r.status !== "ready") throw new Terminal("skipped", "tryon_changed");
+  if (row.kind === "tryon_cancelled" && r.status !== "cancelled") throw new Terminal("skipped", "tryon_changed");
+  const store = await getStoreView(deps, token, r.store_id);
+  return {
+    to: r.email,
+    number: r.number,
+    mail: composeTryonNotice(t, r, store, { shopName: ctx.conn.shop_name, shopUrl: shopUrl(deps.config.bantoOrigin, ctx.conn.shop_slug), settings: ctx.settings, today: todayJst(deps.now()) }),
+  };
 }
 
 /** 記録とログに残すエラーの文（お客様のアドレスを含めない。送り手の応答の文は残さない） */
@@ -212,6 +270,8 @@ export const NOTICE_RESULTS: Record<string, string> = {
   sent: "送った",
   disabled: "送らない設定にした",
   order_not_found: "注文が見つからない",
+  tryon_not_found: "試着のお申し込みが見つからない",
+  tryon_changed: "送る前にお申し込みの状態が変わった",
   no_pii: "宛先を読めない（つなぎ直しが要る）",
   no_email: "メールアドレスが無い",
   invalid_email: "送れない形のメールアドレス",

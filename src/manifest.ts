@@ -19,6 +19,8 @@ export const EVENTS = [
   "product.updated",
   "inventory.low",
   "checkout.abandoned",
+  "tryon.requested", // 取引の知らせ: お店で試着のお申し込みの受付
+  "tryon.updated", // 取引の知らせ: お店で試着の取り置き・期限の前日・延長・取り消し
 ] as const;
 
 export const SCOPES = [
@@ -33,6 +35,7 @@ export const SCOPES = [
   "coupons:read",
   "coupons:write", // 会員にクーポンを配る
   "line:send", // Banto の公式アカウントから LINE で送る
+  "shop:read", // お店で試着の知らせ: 店舗の住所・営業時間を読む（無いつなぎ方では店舗の名前だけ）
 ] as const;
 
 export function manifest(origin: string) {

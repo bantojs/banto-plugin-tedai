@@ -43,13 +43,17 @@ export async function enabledKinds(db: SqlDb, shopId: string): Promise<NoticeKin
 /** 既定の文面（形ごと） */
 export const defaultBody = (kind: NoticeKind, format: "text" | "html") => (format === "html" ? DEFAULT_HTML[kind] : defaultTemplate(kind).body);
 
-/** 送る列に積む。同じ注文 × 種類は 1 回だけ（Banto の再送・同じ出来事が 2 度来ても）。積んだら true */
-export async function enqueueNotice(db: SqlDb, shopId: string, orderId: string, kind: NoticeKind, now: number): Promise<boolean> {
-  const r = await db.run(`INSERT OR IGNORE INTO notice_sends (shop_id, order_id, kind, status, due_at, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?)`, [
+/**
+ * 送る列に積む。同じ注文 × 種類は 1 回だけ（Banto の再送・同じ出来事が 2 度来ても）。積んだら true。
+ * お店で試着は orderId に申し込みの ID（延長は回数を足したもの）、number に受付番号（送る直前に番号で読む）
+ */
+export async function enqueueNotice(db: SqlDb, shopId: string, orderId: string, kind: NoticeKind, now: number, number: number | null = null): Promise<boolean> {
+  const r = await db.run(`INSERT OR IGNORE INTO notice_sends (shop_id, order_id, kind, status, due_at, order_number, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`, [
     shopId,
     orderId,
     kind,
     now,
+    number,
     now,
     now,
   ]);

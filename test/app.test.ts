@@ -28,7 +28,8 @@ describe("マニフェスト", () => {
     expect(m["scopes"]).toContain("line:send");
     expect(m["scopes"]).toContain("orders:contact");
     expect(m["scopes"]).not.toContain("orders:pii");
-    expect(m["events"]).toEqual(["order.created", "order.paid", "order.shipped", "order.cancelled", "customer.deleted", "favorite.added", "favorite.removed", "product.updated", "inventory.low", "checkout.abandoned"]);
+    expect(m["events"]).toEqual(["order.created", "order.paid", "order.shipped", "order.cancelled", "customer.deleted", "favorite.added", "favorite.removed", "product.updated", "inventory.low", "checkout.abandoned", "tryon.requested", "tryon.updated"]);
+    expect(m["scopes"]).toContain("shop:read");
     const html = await call(deps, "/");
     expect(html.headers.get("Content-Type")).toContain("text/html");
     expect(html.headers.get("Content-Security-Policy")).toContain(`frame-ancestors ${BANTO}`);

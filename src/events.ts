@@ -10,7 +10,7 @@ import { favoriteRules, onInventoryLow, onProductUpdated } from "./rules/favorit
 import { onCheckoutAbandoned } from "./rules/abandoned";
 import { addFavorite, removeFavorite } from "./store/favorites";
 import { cancelOrder, forgetCustomer, HOOK_TRIGGERED, parseOrder, recordOrder } from "./store/purchases";
-import { kindOf } from "./notices/kinds";
+import { kindOf, noticeGroup } from "./notices/kinds";
 import { enabledKinds, enqueueNotice } from "./store/notices";
 
 /**
@@ -27,6 +27,8 @@ export async function isHandled(deps: Deps, shopId: string, event: string): Prom
   // order.created・order.shipped は取引の知らせ（src/notices/）だけが使う。送る種類が無ければ配信 ID も書かない
   if (event === "order.created") return (await enabledKinds(deps.db, shopId)).includes("received");
   if (event === "order.shipped") return (await enabledKinds(deps.db, shopId)).includes("shipped");
+  // お店で試着の出来事も、試着の知らせを送るときだけ
+  if (event === "tryon.requested" || event === "tryon.updated") return (await enabledKinds(deps.db, shopId)).some((k) => noticeGroup(k) === "tryon");
   if (event === "product.updated") return (await favoriteRules(deps.db, shopId, ["favorite_restock", "favorite_price_drop"])).length > 0;
   if (event === "inventory.low") return (await favoriteRules(deps.db, shopId, ["favorite_low_stock"])).length > 0;
   return false;
@@ -52,8 +54,19 @@ const isoSeconds = (s: unknown, fallback: number): number => {
 /** 注文の出来事なら、送ると決めている取引の知らせを列に積む（送るのは受け取りの応答の後と Cron。src/notices/send.ts） */
 export async function enqueueNoticeFor(deps: Deps, shopId: string, envelope: Envelope): Promise<boolean> {
   const kind = kindOf(envelope.event, envelope.data);
+  if (!kind) return false;
+  if (noticeGroup(kind) === "tryon") {
+    // お店で試着: 申し込みの ID と受付番号（送る直前に番号で読む）。延長は延長のたびに 1 通（回数ごとに別の行）
+    const requestId = id(envelope.data["request_id"]);
+    const number = envelope.data["number"];
+    if (!requestId || typeof number !== "number" || !Number.isInteger(number) || number <= 0) return false;
+    const count = envelope.data["extend_count"];
+    const key = kind === "tryon_extended" ? `${requestId}-e${typeof count === "number" && Number.isInteger(count) && count > 0 ? count : 1}` : requestId;
+    if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
+    return enqueueNotice(deps.db, shopId, key, kind, deps.now(), number);
+  }
   const orderId = id(envelope.data["order_id"]);
-  if (!kind || !orderId) return false;
+  if (!orderId) return false;
   if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
   return enqueueNotice(deps.db, shopId, orderId, kind, deps.now());
 }
