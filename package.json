@@ -1,6 +1,6 @@
 {
   "name": "banto-plugin-tedai",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "手代（tedai）: Banto のお客様の行動に応じて、決めておいたアプローチとお店の作業を自動で行う外部プラグイン（Cloudflare Workers + D1）",
   "license": "MIT",
