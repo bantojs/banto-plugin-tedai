@@ -1,0 +1,38 @@
+{
+  "name": "banto-plugin-tedai",
+  "version": "0.4.0",
+  "private": true,
+  "description": "手代（tedai）: Banto のお客様の行動に応じて、決めておいたアプローチとお店の作業を自動で行う外部プラグイン（Cloudflare Workers + D1）",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "cloudflare": {
+    "bindings": {
+      "BANTO_URL": {
+        "description": "つなぐ Banto の URL（例 `https://shop.example.com`）。この Banto とだけつなぎます"
+      },
+      "TEDAI_SECRET": {
+        "description": "手代の秘密。32 文字以上の乱数（例: `openssl rand -hex 32` の結果）。Banto から受け取ったトークンをこの値で暗号化して置きます。**誰にも見せず、変えないでください**（変えるとつなぎ直しが要ります）"
+      }
+    }
+  },
+  "dependencies": {
+    "hono": "^4.13.16"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261104.1",
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.157.0"
+  }
+}
