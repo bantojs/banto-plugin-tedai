@@ -1,10 +1,10 @@
 /** @jsxImportSource hono/jsx */
 /**
  * 注文のお知らせ（取引の知らせ、src/notices/）の画面: 一覧・準備の確かめ・文面の編集と見本・送った記録。
+ * お店で試着のお知らせ（お客様あて）も同じ画面で扱う（種類の組が違うだけ）。
  */
-import { NOTICE_KINDS, NOTICE_PLACEHOLDERS, NOTICE_SLOTS, REQUIRED, EVENTS_FOR, noticeLabel, type NoticeKind, type NoticeTemplate } from "../notices/kinds";
-import { SAMPLE_ORDER } from "../notices/order";
-import { composeNotice, NOTICE_RESULTS, orderUrl } from "../notices/send";
+import { NOTICE_KINDS, REQUIRED, EVENTS_FOR, noticeGroup, noticeLabel, placeholdersFor, slotsFor, type NoticeGroup, type NoticeKind, type NoticeTemplate } from "../notices/kinds";
+import { NOTICE_RESULTS, sampleNotice } from "../notices/send";
 import type { NoticeSendRow } from "../store/notices";
 import type { ShopSettings } from "../store/settings";
 import { Errors, Flash, Hidden, q } from "./pages";
@@ -48,15 +48,52 @@ const STATUS_BADGE: Record<string, { tone?: "ok" | "bad" | "warn" | "info"; labe
   failed: { tone: "bad", label: "失敗" },
 };
 
+function KindTable(props: { s: string; templates: NoticeTemplate[] }) {
+  return (
+    <table class="table">
+      <thead>
+        <tr>
+          <th>種類</th>
+          <th>送るとき</th>
+          <th>状態</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {props.templates.map((t) => {
+          const k = NOTICE_KINDS.find((x) => x.kind === t.kind)!;
+          return (
+            <tr>
+              <td>
+                <strong>{k.label}</strong>
+              </td>
+              <td class="small muted">{k.when}</td>
+              <td>
+                {t.enabled ? <Badge tone="ok">手代が送る</Badge> : <Badge>送らない</Badge>}
+                {t.format === "html" ? <span class="small muted"> 飾りあり</span> : null}
+              </td>
+              <td>
+                <a href={`/admin/notices/${t.kind}${q(props.s)}`}>文面</a>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+const ofGroup = (ts: NoticeTemplate[], g: NoticeGroup) => ts.filter((t) => noticeGroup(t.kind) === g);
+
 export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; ready: NoticeReadiness; recent: NoticeSendRow[]; onlyFailed?: boolean; failed: number; msg?: string }) {
   const on = props.templates.filter((t) => t.enabled);
   return (
     <AdminPage s={props.s} title="注文のお知らせ" current="notices">
-      <PageHead title="注文のお知らせ" lead="ご注文の受付・発送などのメールを、Banto の代わりに手代がお客様（会員もゲストも）に送ります。" />
+      <PageHead title="注文のお知らせ" lead="ご注文の受付・発送と、お店で試着の受付・取り置きなどのメールを、Banto の代わりに手代がお客様（会員もゲストも）に送ります。" />
       <Flash msg={props.msg} />
       <Readiness s={props.s} r={props.ready} />
       <div class="card">
-        <h3>切り替えの手順</h3>
+        <h3>切り替えの手順（注文）</h3>
         <ol class="small" style="margin:.35rem 0 0;padding-left:1.25rem;line-height:1.8">
           <li>下の種類ごとに文面を整え、「手代が送る」にして保存します。</li>
           <li>
@@ -76,42 +113,31 @@ export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; rea
         </p>
       </div>
       <div class="card">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>種類</th>
-              <th>送るとき</th>
-              <th>状態</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {props.templates.map((t) => {
-              const k = NOTICE_KINDS.find((x) => x.kind === t.kind)!;
-              return (
-                <tr>
-                  <td>
-                    <strong>{k.label}</strong>
-                  </td>
-                  <td class="small muted">{k.when}</td>
-                  <td>
-                    {t.enabled ? <Badge tone="ok">手代が送る</Badge> : <Badge>送らない</Badge>}
-                    {t.format === "html" ? <span class="small muted"> 飾りあり</span> : null}
-                  </td>
-                  <td>
-                    <a href={`/admin/notices/${t.kind}${q(props.s)}`}>文面</a>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        {on.length > 0 ? (
-          <p class="hint">
-            手代が送る種類: {on.map((t) => noticeLabel(t.kind)).join("・")}。Banto の同梱の「メール通知」と重なっていないか、確かめてください。
-          </p>
-        ) : null}
+        <h3>注文</h3>
+        <KindTable s={props.s} templates={ofGroup(props.templates, "order")} />
       </div>
+      <div class="card">
+        <h3>お店で試着（お客様あて）</h3>
+        <KindTable s={props.s} templates={ofGroup(props.templates, "tryon")} />
+        <ol class="small" style="margin:.75rem 0 0;padding-left:1.25rem;line-height:1.8">
+          <li>
+            Banto の管理画面 → 連携 → 手代 の「購読する出来事」に <code>tryon.requested</code>・<code>tryon.updated</code> を入れます（この版より前からつないでいるショップは、選び直すかつなぎ直します）。
+          </li>
+          <li>
+            Banto の管理画面 → プラグイン → 同梱の「メール通知」で、<strong>「お店で試着のお客様あてのお知らせを送らない」</strong>に印を付けます。付けないと、お客様に同じ知らせが 2 通届きます。
+          </li>
+          <li>店舗あての知らせ（申し込みがありました・延長がありました）は、今までどおり Banto が送ります（店舗のアドレスは手代に渡りません）。</li>
+          <li>
+            店舗の住所・営業時間を載せるには、店舗を読む権限（<code>shop:read</code>）が要ります。この版より前からつないでいるショップは、つなぎ直してください（無いあいだは店舗の名前だけを載せます）。
+          </li>
+        </ol>
+        <p class="hint">LINE のお知らせは今までどおり Banto が送ります（手代が引き受けるのはメールだけです）。</p>
+      </div>
+      {on.length > 0 ? (
+        <p class="hint">
+          手代が送る種類: {on.map((t) => noticeLabel(t.kind)).join("・")}。Banto の同梱の「メール通知」と重なっていないか、確かめてください。
+        </p>
+      ) : null}
       <h2 style="margin-top:1.5rem">{props.onlyFailed ? "失敗した知らせ（新しい 50 件）" : "送った記録（新しい 50 件）"}</h2>
       <p class="small">
         {props.onlyFailed ? <a href={`/admin/notices${q(props.s)}`}>すべて</a> : <a href={`/admin/notices${q(props.s)}&status=failed`}>失敗だけ</a>}
@@ -135,7 +161,7 @@ export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; rea
             <thead>
               <tr>
                 <th>受け取った時刻</th>
-                <th>注文</th>
+                <th>注文・申し込み</th>
                 <th>種類</th>
                 <th>状態</th>
                 <th>結果</th>
@@ -147,7 +173,7 @@ export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; rea
                 return (
                   <tr>
                     <td class="small">{fmt(r.created_at)}</td>
-                    <td>{r.order_number ? `#${r.order_number}` : <ShortId id={r.order_id} />}</td>
+                    <td>{r.order_number ? (noticeGroup(r.kind) === "tryon" ? `受付 #${r.order_number}` : `#${r.order_number}`) : <ShortId id={r.order_id} />}</td>
                     <td>{noticeLabel(r.kind)}</td>
                     <td>
                       <Badge tone={b.tone}>{b.label}</Badge>
@@ -176,11 +202,18 @@ export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; rea
   );
 }
 
-export function NoticeEditPage(props: { s: string; template: NoticeTemplate; settings: ShopSettings; shopName: string; shopSlug: string; bantoOrigin: string; ready: NoticeReadiness; errors: string[]; msg?: string }) {
+const PLACEHOLDER_HELP: Record<NoticeGroup, string> = {
+  order: "お名前・ショップ・注文番号・合計・ご注文の確認ページ・お支払い方法・問い合わせ先・明細・発送のお問い合わせ番号",
+  tryon: "お名前・ショップ・受付番号・店舗の名前・取り置きの期限・来店予定日の行（受付だけ）・問い合わせ先・お店のトップ・品目・店舗の案内（住所・電話・営業時間・近い臨時休業）",
+};
+
+export function NoticeEditPage(props: { s: string; template: NoticeTemplate; settings: ShopSettings; shopName: string; shopSlug: string; bantoOrigin: string; now: number; storeRead: boolean; ready: NoticeReadiness; errors: string[]; msg?: string }) {
   const t = props.template;
   const k = NOTICE_KINDS.find((x) => x.kind === t.kind)!;
-  const sample = composeNotice(t, SAMPLE_ORDER, { shopName: props.shopName, orderUrl: orderUrl(props.bantoOrigin, props.shopSlug, SAMPLE_ORDER), settings: props.settings });
+  const group = k.group;
+  const sample = sampleNotice(t, { shopName: props.shopName, shopSlug: props.shopSlug, bantoOrigin: props.bantoOrigin, settings: props.settings, now: props.now });
   const required = REQUIRED[t.kind];
+  const slots = slotsFor(t.kind);
   return (
     <AdminPage s={props.s} title={`${k.label}のお知らせ`} current="notices">
       <PageHead title={`${k.label}のお知らせ`} lead={`送るとき: ${k.when}`} back={{ href: `/admin/notices${q(props.s)}`, label: "注文のお知らせ" }} />
@@ -213,22 +246,31 @@ export function NoticeEditPage(props: { s: string; template: NoticeTemplate; set
             {t.body}
           </textarea>
           <p class="hint">
-            差し込み: {[...NOTICE_PLACEHOLDERS, ...NOTICE_SLOTS].map((p) => <code style="margin-right:.25rem">{`{{${p}}}`}</code>)}
-            （お名前・ショップ・注文番号・合計・ご注文の確認ページ・お支払い方法・問い合わせ先・明細・発送のお問い合わせ番号）。
+            差し込み: {[...placeholdersFor(t.kind), ...slots].map((p) => <code style="margin-right:.25rem">{`{{${p}}}`}</code>)}
+            （{PLACEHOLDER_HELP[group]}）。
             {required.length > 0 ? (
               <>
                 {" "}
                 この知らせには {required.map((r) => <code style="margin-right:.25rem">{`{{${r}}}`}</code>)}を必ず入れます。
               </>
             ) : null}
-            明細（{"{{order_details}}"}）と発送のお問い合わせ番号（{"{{tracking}}"}）は 1 行に単独で書きます。飾りありの書き方はルールのメールと同じです（見出し・太字・リンク・ボタン・画像）。
+            {slots.map((p) => <code style="margin-right:.25rem">{`{{${p}}}`}</code>)}は 1 行に単独で書きます。飾りありの書き方はルールのメールと同じです（見出し・太字・リンク・ボタン・画像）。
           </p>
+          {group === "tryon" && !props.storeRead ? (
+            <div class="notice warn small">
+              このつなぎ方には店舗を読む権限（<code>shop:read</code>）がありません。店舗の案内（{"{{store_info}}"}）には店舗の名前だけが入ります。住所・営業時間を載せるには、Banto の管理画面 → 連携 → 手代 でつなぎ直してください。
+            </div>
+          ) : null}
           <p class="hint">
-            「試しに送る」は、いま画面にある文面（保存はしません）を見本の注文で作り、
+            「試しに送る」は、いま画面にある文面（保存はしません）を見本の{group === "tryon" ? "申し込み" : "注文"}で作り、
             {props.settings.operator_email ? <strong>{props.settings.operator_email}</strong> : <a href={`/admin/settings${q(props.s)}`}>設定の「運営者への知らせ」の宛先</a>}
             に 1 通送ります（お客様には送りません。件名の頭に [試し送り]）。
           </p>
-          <p class="hint">ご注文の確認ページ（{"{{order_url}}"}）は Banto の注文照会です。ゲストは注文番号が入った状態で開き、メールアドレスを入れて確かめます。発送の追跡番号もここに出ます。</p>
+          {group === "order" ? (
+            <p class="hint">ご注文の確認ページ（{"{{order_url}}"}）は Banto の注文照会です。ゲストは注文番号が入った状態で開き、メールアドレスを入れて確かめます。発送の追跡番号もここに出ます。</p>
+          ) : (
+            <p class="hint">お店のトップ（{"{{shop_url}}"}）はボタンやリンクの先に使えます。お申し込みの確認・延長は、会員のお客様なら Banto の会員ページでできます。</p>
+          )}
           <div class="row" style="margin-top:1rem">
             <button name="op" value="save">
               保存する
@@ -246,7 +288,9 @@ export function NoticeEditPage(props: { s: string; template: NoticeTemplate; set
         </div>
       </form>
       <h2 style="margin-top:1.5rem">見本</h2>
-      <p class="small muted">見本の注文（番号 1001・2 品・値引きと送料あり）で作っています。件名: {sample.subject}</p>
+      <p class="small muted">
+        {group === "tryon" ? "見本の申し込み（受付番号 2001・2 品・渋谷店）" : "見本の注文（番号 1001・2 品・値引きと送料あり）"}で作っています。件名: {sample.subject}
+      </p>
       {sample.html ? (
         <iframe class="mail-preview" title="メールの見本" sandbox="" srcdoc={sample.html} />
       ) : null}

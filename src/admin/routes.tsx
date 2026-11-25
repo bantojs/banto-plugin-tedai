@@ -44,10 +44,9 @@ import { verifySession } from "./session";
 import { readForm as readFormLimited } from "../http-body";
 import { allowUser, listAdminUsers, removeUser, roleOf, transferOwner } from "../store/admin-users";
 import { NoticeEditPage, NoticesPage, kindParam, noticeReady, type NoticeReadiness } from "./notices";
-import { checkTemplate, defaultTemplate, NOTICE_SLOTS, type NoticeTemplate } from "../notices/kinds";
+import { checkTemplate, defaultTemplate, slotsFor, type NoticeTemplate } from "../notices/kinds";
 import { parseMailBody } from "../mail/html";
-import { composeNotice, orderUrl } from "../notices/send";
-import { SAMPLE_ORDER } from "../notices/order";
+import { sampleNotice } from "../notices/send";
 import { countFailed, retryFailedNotices } from "../store/notices";
 import { defaultBody, getTemplate, listTemplates, recentNotices, retryNotice, saveTemplate } from "../store/notices";
 
@@ -231,6 +230,8 @@ export function registerAdmin(app: Hono<Env>) {
         shopName={ctx.connection.shop_name}
         shopSlug={ctx.connection.shop_slug}
         bantoOrigin={c.env.config.bantoOrigin}
+        now={c.env.now()}
+        storeRead={ctx.connection.scopes.includes("shop:read")}
         ready={await readiness(c, ctx)}
         errors={errors}
         msg={msg}
@@ -264,7 +265,7 @@ export function registerAdmin(app: Hono<Env>) {
     if (op === "reset") {
       return editPage(c, p.ctx, { ...t, subject: defaultTemplate(kind).subject, body: defaultBody(kind, format) }, [], "reset");
     }
-    const errors = checkTemplate(t, format === "html" ? parseMailBody(t.body, NOTICE_SLOTS).errors : []);
+    const errors = checkTemplate(t, format === "html" ? parseMailBody(t.body, slotsFor(kind)).errors : []);
     if (op === "test") {
       // 試し送り: 画面の文面（保存はしない）を見本の注文で作り、設定の「運営者への知らせ」の宛先に 1 通送る
       if (errors.length > 0) return editPage(c, p.ctx, t, errors, undefined, 400);
@@ -288,7 +289,7 @@ export function registerAdmin(app: Hono<Env>) {
     if (!(await takeSlot(c.env.db, `test_send:${ctx.shopId}`, c.env.now(), TEST_SEND_INTERVAL))) {
       return { ok: false, error: `試し送りは ${TEST_SEND_INTERVAL} 秒に 1 通までです。少し待ってから押してください` };
     }
-    const mail = composeNotice(t, SAMPLE_ORDER, { shopName: ctx.connection.shop_name, orderUrl: orderUrl(cfg.bantoOrigin, ctx.connection.shop_slug, SAMPLE_ORDER), settings });
+    const mail = sampleNotice(t, { shopName: ctx.connection.shop_name, shopSlug: ctx.connection.shop_slug, bantoOrigin: cfg.bantoOrigin, settings, now: c.env.now() });
     try {
       await mailer(cfg.mail, { fetch: c.env.fetch, sockets: c.env.sockets, ehloName: new URL(c.req.url).hostname }).send({
         shop: { slug: ctx.connection.shop_slug, id: ctx.connection.shop_id },
