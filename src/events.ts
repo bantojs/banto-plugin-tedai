@@ -29,6 +29,8 @@ export async function isHandled(deps: Deps, shopId: string, event: string): Prom
   if (event === "order.shipped") return (await enabledKinds(deps.db, shopId)).includes("shipped");
   // お店で試着の出来事も、試着の知らせを送るときだけ
   if (event === "tryon.requested" || event === "tryon.updated") return (await enabledKinds(deps.db, shopId)).some((k) => noticeGroup(k) === "tryon");
+  // お支払いのお願いも、送るときだけ
+  if (event === "checkout.payment_pending") return (await enabledKinds(deps.db, shopId)).includes("payment_reminder");
   if (event === "product.updated") return (await favoriteRules(deps.db, shopId, ["favorite_restock", "favorite_price_drop"])).length > 0;
   if (event === "inventory.low") return (await favoriteRules(deps.db, shopId, ["favorite_low_stock"])).length > 0;
   return false;
@@ -67,6 +69,13 @@ export async function enqueueNoticeFor(deps: Deps, shopId: string, envelope: Env
     const key = kind === "tryon_extended" ? `${requestId}-e${typeof count === "number" && Number.isInteger(count) && count > 0 ? count : 1}` : requestId;
     if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
     return lineOnly ? recordLineOnly(deps, shopId, key, kind, number) : enqueueNotice(deps.db, shopId, key, kind, deps.now(), number);
+  }
+  if (noticeGroup(kind) === "payment") {
+    // お支払いのお願い: 予約の ID（送る直前に 0182 の口で読む）。予約ごとに 1 回
+    const reservationId = id(envelope.data["reservation_id"]);
+    if (!reservationId) return false;
+    if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
+    return lineOnly ? recordLineOnly(deps, shopId, reservationId, kind, null) : enqueueNotice(deps.db, shopId, reservationId, kind, deps.now());
   }
   const orderId = id(envelope.data["order_id"]);
   if (!orderId) return false;

@@ -25,7 +25,7 @@
 export const MAX_LINKS = 100;
 
 /** リンクの先に書ける差し込み（値が URL のもの） */
-export const URL_PLACEHOLDERS = ["product_url", "order_url", "shop_url"] as const;
+export const URL_PLACEHOLDERS = ["product_url", "order_url", "shop_url", "payment_link"] as const;
 
 type Plain = { t: "text"; v: string } | { t: "link"; label: string; url: string };
 /** 太字の中にはリンクを書ける（**[セールのページ](https://…)**）。太字の入れ子は無い */

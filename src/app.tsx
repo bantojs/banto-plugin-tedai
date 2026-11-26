@@ -363,7 +363,7 @@ async function receiveHook(c: C): Promise<Response> {
   }
   // 注文・お店で試着の知らせは応答の後すぐに送る（Banto の hooks も 5 分ごとなので、Cron を待つとさらに最大 5 分遅れる）。送れなければ Cron がやり直す
   // SMTP は 1 通に 60 秒まで待つので、応答の後の 30 秒に収まらないことがある。Cron（持ち時間が長い）に任せる
-  if ((env.event.startsWith("order.") || env.event.startsWith("tryon.")) && deps.config.mail?.transport !== "smtp") {
+  if ((env.event.startsWith("order.") || env.event.startsWith("tryon.") || env.event === "checkout.payment_pending") && deps.config.mail?.transport !== "smtp") {
     const shopId = env.shop_id;
     try {
       c.executionCtx.waitUntil(processNotices(deps, 2, { shopId }).catch((e: unknown) => console.error("notice send failed", e instanceof Error ? e.message.slice(0, 200) : "unknown")));

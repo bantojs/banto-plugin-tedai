@@ -17,6 +17,7 @@ import { dueNotices, finishNotice, listTemplates, type NoticeSendRow } from "../
 import { getSettings, type ShopSettings } from "../store/settings";
 import { defaultTemplate, noticeGroup, NOTICE_SLOTS, type NoticeKind, type NoticeTemplate } from "./kinds";
 import { getOrderView, orderSlots, paymentLabel, SAMPLE_ORDER, yen, type OrderView } from "./order";
+import { getReminderView, reminderSlots, reminderValues, SAMPLE_REMINDER, type ReminderView } from "./reminder";
 import { getStoreView, getTryonView, SAMPLE_STORE, SAMPLE_TRYON, todayJst, tryonSlots, tryonValues, type StoreView, type TryonView } from "./tryon";
 
 export const MAX_NOTICE_ATTEMPTS = 5;
@@ -74,8 +75,15 @@ export function composeTryonNotice(t: NoticeTemplate, r: TryonView, store: Store
   return composeWith(t, values, tryonSlots(r, store, ctx.today), ctx);
 }
 
+/** 文面とお支払いの予約から、件名・文字だけの版・（飾りありなら）HTML を作る */
+export function composeReminderNotice(t: NoticeTemplate, r: ReminderView, ctx: { shopName: string; settings: ShopSettings }): { subject: string; text: string; html?: string } {
+  const values: Record<string, string> = { name: r.name ?? "お客様", shop: ctx.shopName, contact: contactOf(ctx.settings), ...reminderValues(r) };
+  return composeWith(t, values, reminderSlots(r), ctx);
+}
+
 /** 見本の注文・申し込みで作る（画面の見本と試し送り） */
 export function sampleNotice(t: NoticeTemplate, ctx: { shopName: string; shopSlug: string; bantoOrigin: string; settings: ShopSettings; now: number }): { subject: string; text: string; html?: string } {
+  if (noticeGroup(t.kind) === "payment") return composeReminderNotice(t, SAMPLE_REMINDER, ctx);
   if (noticeGroup(t.kind) === "tryon") {
     return composeTryonNotice(t, SAMPLE_TRYON, SAMPLE_STORE, { shopName: ctx.shopName, shopUrl: shopUrl(ctx.bantoOrigin, ctx.shopSlug), settings: ctx.settings, today: todayJst(ctx.now) });
   }
@@ -111,7 +119,7 @@ async function shopCtx(deps: Deps, cache: Map<string, ShopCtx | null>, shopId: s
   return ctx;
 }
 
-async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ result: string; order_number: number }> {
+async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ result: string; order_number: number | null }> {
   const t = ctx.templates.get(row.kind) ?? defaultTemplate(row.kind);
   // 積んだあとに「送らない」にした
   if (!t.enabled) throw new Terminal("skipped", "disabled");
@@ -119,7 +127,8 @@ async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ 
   if (!deps.config.mail) throw new Error("mail_not_configured");
   if (!settings.mail_from) throw new Error("mail_from_missing");
   if (!ctx.token) throw new Error("token_unavailable");
-  const built = noticeGroup(row.kind) === "tryon" ? await buildTryon(deps, ctx, ctx.token, t, row) : await buildOrder(deps, ctx, ctx.token, t, row);
+  const group = noticeGroup(row.kind);
+  const built = group === "tryon" ? await buildTryon(deps, ctx, ctx.token, t, row) : group === "payment" ? await buildReminder(deps, ctx, ctx.token, t, row) : await buildOrder(deps, ctx, ctx.token, t, row);
   const transport = deps.config.mail.transport;
   // SMTP には重なりを防ぐ鍵が無い: 送り始める前に印を残す（送っている途中で Worker が切れたら、取り直しで送り直さない）
   if (transport === "smtp") {
@@ -147,7 +156,26 @@ async function sendOne(deps: Deps, ctx: ShopCtx, row: NoticeSendRow): Promise<{ 
   return { result: "sent", order_number: built.number };
 }
 
-type Built = { to: string; number: number; mail: { subject: string; text: string; html?: string } };
+type Built = { to: string; number: number | null; mail: { subject: string; text: string; html?: string } };
+
+async function buildReminder(deps: Deps, ctx: ShopCtx, token: string, t: NoticeTemplate, row: NoticeSendRow): Promise<Built> {
+  let r: ReminderView | null;
+  try {
+    r = await getReminderView(deps, token, row.order_id);
+  } catch (e) {
+    // 404: もう払った・取りやめた・期限が切れた（送らない合図）
+    if (e instanceof BantoError && e.status === 404) throw new Terminal("skipped", "reservation_closed");
+    // 409: Banto に 0182 が当たっていない（お支払いのお願いの中身を読む口が無い）
+    if (e instanceof BantoError && e.status === 409) throw new Terminal("failed", "banto_too_old", e.code);
+    throw e;
+  }
+  if (!r) throw new Error("reservation_unreadable");
+  if (!r.pii) throw new Terminal("failed", "no_pii");
+  if (!r.email) throw new Terminal("skipped", "no_email");
+  // リンクの無いお支払いのお願いは送らない（Banto の公開の URL・ショップのドメインが無いと Banto が組めない）
+  if (!r.payment_link) throw new Terminal("failed", "no_payment_link");
+  return { to: r.email, number: null, mail: composeReminderNotice(t, r, { shopName: ctx.conn.shop_name, settings: ctx.settings }) };
+}
 
 async function buildOrder(deps: Deps, ctx: ShopCtx, token: string, t: NoticeTemplate, row: NoticeSendRow): Promise<Built> {
   let o: OrderView | null;
@@ -273,6 +301,9 @@ export const NOTICE_RESULTS: Record<string, string> = {
   order_not_found: "注文が見つからない",
   tryon_not_found: "試着のお申し込みが見つからない",
   tryon_changed: "送る前にお申し込みの状態が変わった",
+  reservation_closed: "送る前にお支払い済み・取りやめ・期限切れになった",
+  banto_too_old: "Banto が古い（0182 の入った版に上げてください）",
+  no_payment_link: "Banto がお支払いのリンクを組めない（Banto の PUBLIC_BASE_URL かショップのドメインを確かめてください）",
   no_pii: "宛先を読めない（つなぎ直しが要る）",
   no_email: "メールアドレスが無い",
   invalid_email: "送れない形のメールアドレス",
