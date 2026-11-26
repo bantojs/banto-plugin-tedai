@@ -181,6 +181,21 @@ describe("注文のお知らせを送る", () => {
     expect(b.seen[0]!.headers.get("Idempotency-Key")).toBe(b.seen[1]!.headers.get("Idempotency-Key"));
   });
 
+  it("お客様が「LINE だけ」を選んだ知らせ（notice_line_only）はメールを送らず、記録だけ残す", async () => {
+    const b = banto();
+    const deps = await setup(b);
+    await saveTemplate(deps.db, SHOP, { ...defaultTemplate("received"), enabled: true }, NOW);
+    expect((await hook(deps, "d1", "order.paid", { customer_id: "c1", number: 1042, notice_line_only: true })).status).toBe(200);
+    expect(await processNotices(deps, 10)).toBe(0);
+    expect(b.seen).toHaveLength(0);
+    expect(await sends(deps)).toEqual([{ kind: "received", status: "skipped", result: "line_only", order_number: 1042, attempts: 0 }]);
+    // 印の無い知らせ（同じ注文の発送）は今までどおり送る
+    await saveTemplate(deps.db, SHOP, { ...defaultTemplate("shipped"), enabled: true }, NOW);
+    await hook(deps, "d2", "order.shipped", { customer_id: "c1" });
+    expect(await processNotices(deps, 10)).toBe(1);
+    expect(b.seen).toHaveLength(1);
+  });
+
   it("order.created・order.shipped は送る種類が無ければ配信 ID も書かない", async () => {
     const deps = await setup(banto());
     await hook(deps, "d1", "order.shipped", {});

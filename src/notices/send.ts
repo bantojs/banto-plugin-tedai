@@ -269,6 +269,7 @@ export async function processNotices(deps: Deps, max: number, opts: { shopId?: s
 export const NOTICE_RESULTS: Record<string, string> = {
   sent: "送った",
   disabled: "送らない設定にした",
+  line_only: "お客様が「LINE だけ」を選んでいる（Banto が LINE で送る）",
   order_not_found: "注文が見つからない",
   tryon_not_found: "試着のお申し込みが見つからない",
   tryon_changed: "送る前にお申し込みの状態が変わった",

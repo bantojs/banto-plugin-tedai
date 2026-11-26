@@ -221,6 +221,16 @@ describe("お店で試着のお知らせを送る", () => {
     expect((await sends(deps2))[0]).toMatchObject({ status: "failed", result: "no_pii" });
   });
 
+  it("「LINE だけ」の申し込みの知らせはメールを送らない", async () => {
+    const b = banto();
+    const deps = await setup(b);
+    await enable(deps, "tryon_ready");
+    await hook(deps, "d1", "tryon.updated", { status: "ready", notice_line_only: true });
+    expect(await processNotices(deps, 10)).toBe(0);
+    expect(b.seen).toHaveLength(0);
+    expect((await sends(deps))[0]).toMatchObject({ kind: "tryon_ready", status: "skipped", result: "line_only", order_number: 3007 });
+  });
+
   it("受付番号の無い出来事は積まない", async () => {
     const deps = await setup(banto());
     await enable(deps, "tryon_requested");
