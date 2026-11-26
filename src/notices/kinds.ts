@@ -17,13 +17,16 @@
  *   tryon_cancelled  お申し込みの取り消し    tryon.updated（cancelled）
  * 店舗あての知らせは Banto が送る（店舗のアドレスは外部プラグインに渡らない）。
  *
+ * お支払いのお願い（payment_reminder）: KOMOJU の未払いの予約に、Banto が 24 時間後に 1 回 checkout.payment_pending を出す（0181。
+ * Banto の「お知らせの文面」で「お支払いのお願いを送る」を ON にしたショップだけ）。中身は 0182 の口で読む（src/notices/reminder.ts）。
+ *
  * 差し込みと必ず入れるものは Banto の「お知らせの文面」（0154）にそろえる。受付と発送は明細（{{order_details}}）が必須。
  * 発送は Banto と同じく追跡番号（{{tracking}}、Banto 0172 の注文の tracking）も必須。番号の無い注文では、
  * ご注文の確認ページ（照会のページ）を案内する。
  */
 
-export type NoticeKind = "received" | "paid" | "shipped" | "cancelled" | "tryon_requested" | "tryon_ready" | "tryon_reminder" | "tryon_extended" | "tryon_cancelled";
-export type NoticeGroup = "order" | "tryon";
+export type NoticeKind = "received" | "paid" | "shipped" | "cancelled" | "tryon_requested" | "tryon_ready" | "tryon_reminder" | "tryon_extended" | "tryon_cancelled" | "payment_reminder";
+export type NoticeGroup = "order" | "tryon" | "payment";
 
 export const NOTICE_KINDS: { kind: NoticeKind; group: NoticeGroup; label: string; when: string }[] = [
   { kind: "received", group: "order", label: "ご注文の受付", when: "お支払いが済んだとき（代金引換などの未入金の注文は、注文を確定したとき）" },
@@ -35,6 +38,7 @@ export const NOTICE_KINDS: { kind: NoticeKind; group: NoticeGroup; label: string
   { kind: "tryon_reminder", group: "tryon", label: "お取り置きの期限の前日", when: "取り置きの期限の前日（Banto の試着の設定で送る時刻を決めたとき）" },
   { kind: "tryon_extended", group: "tryon", label: "お取り置きの延長", when: "お客様が会員ページで取り置きを延長したとき（延長のたびに）" },
   { kind: "tryon_cancelled", group: "tryon", label: "試着のお申し込みの取り消し", when: "お申し込みを取り消したとき" },
+  { kind: "payment_reminder", group: "payment", label: "お支払いのお願い（KOMOJU）", when: "コンビニ払い・銀行振込などで、お申し込みから 24 時間たってもお支払いが無いとき（1 回だけ）" },
 ];
 
 export const isNoticeKind = (v: string): v is NoticeKind => NOTICE_KINDS.some((k) => k.kind === v);
@@ -51,10 +55,15 @@ export const TRYON_PLACEHOLDERS = ["name", "shop", "tryon_number", "store_name",
 /** お店で試着のかたまり（品目・店舗の住所と営業時間） */
 export const TRYON_SLOTS = ["tryon_items", "store_info"] as const;
 
-export const placeholdersFor = (k: NoticeKind): readonly string[] => (noticeGroup(k) === "tryon" ? TRYON_PLACEHOLDERS : NOTICE_PLACEHOLDERS);
-export const slotsFor = (k: NoticeKind): readonly string[] => (noticeGroup(k) === "tryon" ? TRYON_SLOTS : NOTICE_SLOTS);
-/** 飾りありの本文を読むときのかたまりの名前（どちらの知らせも同じ読み方。使えるかは checkTemplate が確かめる） */
-export const ALL_SLOTS = [...NOTICE_SLOTS, ...TRYON_SLOTS] as const;
+/** お支払いのお願いの差し込み。payment_link はお支払いに進む・取りやめる画面（ボタンやリンクの先にも使える） */
+export const PAYMENT_PLACEHOLDERS = ["name", "shop", "total", "pay_until", "payment_method", "payment_link", "contact"] as const;
+/** お支払いのお願いのかたまり（品目と合計） */
+export const PAYMENT_SLOTS = ["items"] as const;
+
+const PLACEHOLDERS_OF: Record<NoticeGroup, readonly string[]> = { order: NOTICE_PLACEHOLDERS, tryon: TRYON_PLACEHOLDERS, payment: PAYMENT_PLACEHOLDERS };
+const SLOTS_OF: Record<NoticeGroup, readonly string[]> = { order: NOTICE_SLOTS, tryon: TRYON_SLOTS, payment: PAYMENT_SLOTS };
+export const placeholdersFor = (k: NoticeKind): readonly string[] => PLACEHOLDERS_OF[noticeGroup(k)];
+export const slotsFor = (k: NoticeKind): readonly string[] => SLOTS_OF[noticeGroup(k)];
 
 /** 必ず入れる差し込み（本文）。試着は Banto の「お知らせの文面」（0154）の決まりにそろえる */
 export const REQUIRED: Record<NoticeKind, string[]> = {
@@ -67,6 +76,7 @@ export const REQUIRED: Record<NoticeKind, string[]> = {
   tryon_reminder: ["hold_until", "tryon_items", "store_info"],
   tryon_extended: ["hold_until", "tryon_items", "store_info"],
   tryon_cancelled: ["tryon_number"],
+  payment_reminder: ["payment_link"],
 };
 
 /** 出来事 → 知らせの種類（送らないものは null） */
@@ -82,6 +92,8 @@ export function kindOf(event: string, data: Record<string, unknown>): NoticeKind
       return "shipped";
     case "order.cancelled":
       return "cancelled";
+    case "checkout.payment_pending":
+      return "payment_reminder";
     case "tryon.requested":
       return "tryon_requested";
     case "tryon.updated": {
@@ -107,6 +119,7 @@ export const EVENTS_FOR: Record<NoticeKind, string[]> = {
   tryon_reminder: ["tryon.updated"],
   tryon_extended: ["tryon.updated"],
   tryon_cancelled: ["tryon.updated"],
+  payment_reminder: ["checkout.payment_pending"],
 };
 
 export interface NoticeTemplate {
@@ -155,6 +168,10 @@ export const DEFAULT_TEXTS: Record<NoticeKind, { subject: string; body: string }
     subject: "【{{shop}}】お店で試着のお申し込みを取り消しました（受付番号 {{tryon_number}}）",
     body: "{{name}} 様\n\nお店で試着のお申し込み（受付番号 {{tryon_number}}）を取り消しました。\n\nお問い合わせ: {{contact}}\n\n{{shop}}",
   },
+  payment_reminder: {
+    subject: "【{{shop}}】お支払いのお願い（期限 {{pay_until}}）",
+    body: "{{name}} 様\n\n{{shop}} でのお申し込みのお支払いが、まだ確認できていません。\nお支払いの期限は {{pay_until}} です。期限を過ぎると、お申し込みは取り消しになります。\n\n{{items}}\n\nお支払いに進む・お申し込みを取りやめる:\n{{payment_link}}\n\n行き違いでお支払いいただいていましたら、ご容赦ください。\n\nお問い合わせ: {{contact}}\n\n{{shop}}",
+  },
 };
 
 /** 飾りあり（HTML）の既定の文面（決まった書き方。src/mail/html.ts） */
@@ -168,6 +185,7 @@ export const DEFAULT_HTML: Record<NoticeKind, string> = {
   tryon_reminder: "# お取り置きは{{hold_until}}までです\n{{name}} 様\n\n{{store_name}}でお取り置きしている商品は、**{{hold_until}}まで**です。営業時間をご確認のうえ、お越しください。\n\n{{tryon_items}}\n\n## ご来店いただく店舗\n{{store_info}}\n\nお問い合わせ: {{contact}}",
   tryon_extended: "# お取り置きの期限を延長しました\n{{name}} 様\n\n{{store_name}}でのお取り置きを**{{hold_until}}まで**延長しました。営業時間をご確認のうえ、お越しください。\n\n{{tryon_items}}\n\n## ご来店いただく店舗\n{{store_info}}\n\nお問い合わせ: {{contact}}",
   tryon_cancelled: "# お申し込みを取り消しました\n{{name}} 様\n\nお店で試着のお申し込み（受付番号 {{tryon_number}}）を取り消しました。\n\nお問い合わせ: {{contact}}",
+  payment_reminder: "# お支払いのお願い\n{{name}} 様\n\nお申し込みのお支払いが、まだ確認できていません。お支払いの期限は **{{pay_until}}** です。期限を過ぎると、お申し込みは取り消しになります。\n\n{{items}}\n\n[[お支払いに進む]]({{payment_link}})\n\nお支払いの方法を変えたいとき・お申し込みを取りやめるときも、上のボタンからお進みください。行き違いでお支払いいただいていましたら、ご容赦ください。\n\nお問い合わせ: {{contact}}",
 };
 
 export const defaultTemplate = (kind: NoticeKind): NoticeTemplate => ({ kind, enabled: false, format: "text", ...DEFAULT_TEXTS[kind] });

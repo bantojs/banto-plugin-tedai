@@ -33,7 +33,7 @@ export interface Config {
   workersPlan?: "free" | "paid";
 }
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 
 export type ConfigResult = { ok: true; config: Config } | { ok: false; missing: string[] };
 

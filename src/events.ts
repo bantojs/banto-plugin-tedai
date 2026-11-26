@@ -10,8 +10,8 @@ import { favoriteRules, onInventoryLow, onProductUpdated } from "./rules/favorit
 import { onCheckoutAbandoned } from "./rules/abandoned";
 import { addFavorite, removeFavorite } from "./store/favorites";
 import { cancelOrder, forgetCustomer, HOOK_TRIGGERED, parseOrder, recordOrder } from "./store/purchases";
-import { kindOf, noticeGroup } from "./notices/kinds";
-import { enabledKinds, enqueueNotice } from "./store/notices";
+import { kindOf, noticeGroup, type NoticeKind } from "./notices/kinds";
+import { enabledKinds, enqueueNotice, finishNotice } from "./store/notices";
 
 /**
  * いま処理する出来事。これ以外（banto.ping・後の版で使う product.updated / inventory.low）は 200 を返すだけで、
@@ -29,6 +29,8 @@ export async function isHandled(deps: Deps, shopId: string, event: string): Prom
   if (event === "order.shipped") return (await enabledKinds(deps.db, shopId)).includes("shipped");
   // お店で試着の出来事も、試着の知らせを送るときだけ
   if (event === "tryon.requested" || event === "tryon.updated") return (await enabledKinds(deps.db, shopId)).some((k) => noticeGroup(k) === "tryon");
+  // お支払いのお願いも、送るときだけ
+  if (event === "checkout.payment_pending") return (await enabledKinds(deps.db, shopId)).includes("payment_reminder");
   if (event === "product.updated") return (await favoriteRules(deps.db, shopId, ["favorite_restock", "favorite_price_drop"])).length > 0;
   if (event === "inventory.low") return (await favoriteRules(deps.db, shopId, ["favorite_low_stock"])).length > 0;
   return false;
@@ -55,6 +57,9 @@ const isoSeconds = (s: unknown, fallback: number): number => {
 export async function enqueueNoticeFor(deps: Deps, shopId: string, envelope: Envelope): Promise<boolean> {
   const kind = kindOf(envelope.event, envelope.data);
   if (!kind) return false;
+  // お客様が「お知らせを LINE だけで受け取る」を選び、Banto がそれを効かせた知らせ（Banto 0176、hooks の notice_line_only）。
+  // お客様には Banto が LINE で送るので、手代はメールを送らない（記録には「LINE だけ」で残す）
+  const lineOnly = envelope.data["notice_line_only"] === true;
   if (noticeGroup(kind) === "tryon") {
     // お店で試着: 申し込みの ID と受付番号（送る直前に番号で読む）。延長は延長のたびに 1 通（回数ごとに別の行）
     const requestId = id(envelope.data["request_id"]);
@@ -63,12 +68,28 @@ export async function enqueueNoticeFor(deps: Deps, shopId: string, envelope: Env
     const count = envelope.data["extend_count"];
     const key = kind === "tryon_extended" ? `${requestId}-e${typeof count === "number" && Number.isInteger(count) && count > 0 ? count : 1}` : requestId;
     if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
-    return enqueueNotice(deps.db, shopId, key, kind, deps.now(), number);
+    return lineOnly ? recordLineOnly(deps, shopId, key, kind, number) : enqueueNotice(deps.db, shopId, key, kind, deps.now(), number);
+  }
+  if (noticeGroup(kind) === "payment") {
+    // お支払いのお願い: 予約の ID（送る直前に 0182 の口で読む）。予約ごとに 1 回
+    const reservationId = id(envelope.data["reservation_id"]);
+    if (!reservationId) return false;
+    if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
+    return lineOnly ? recordLineOnly(deps, shopId, reservationId, kind, null) : enqueueNotice(deps.db, shopId, reservationId, kind, deps.now());
   }
   const orderId = id(envelope.data["order_id"]);
   if (!orderId) return false;
   if (!(await enabledKinds(deps.db, shopId)).includes(kind)) return false;
-  return enqueueNotice(deps.db, shopId, orderId, kind, deps.now());
+  const number = typeof envelope.data["number"] === "number" && Number.isInteger(envelope.data["number"]) ? (envelope.data["number"] as number) : null;
+  return lineOnly ? recordLineOnly(deps, shopId, orderId, kind, number) : enqueueNotice(deps.db, shopId, orderId, kind, deps.now());
+}
+
+/** 「LINE だけ」の知らせは送らずに、送らなかった記録だけ残す（送った記録の画面で分かるように） */
+async function recordLineOnly(deps: Deps, shopId: string, key: string, kind: NoticeKind, number: number | null): Promise<boolean> {
+  const now = deps.now();
+  if (!(await enqueueNotice(deps.db, shopId, key, kind, now, number))) return false;
+  await finishNotice(deps.db, { shop_id: shopId, order_id: key, kind }, { status: "skipped", result: "line_only", last_error: null }, now);
+  return false;
 }
 
 export async function handleEvent(deps: Deps, connection: Connection, envelope: Envelope): Promise<void> {

@@ -133,6 +133,24 @@ export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; rea
         </ol>
         <p class="hint">LINE のお知らせは今までどおり Banto が送ります（手代が引き受けるのはメールだけです）。</p>
       </div>
+      <div class="card">
+        <h3>お支払いのお願い（KOMOJU）</h3>
+        <KindTable s={props.s} templates={ofGroup(props.templates, "payment")} />
+        <ol class="small" style="margin:.75rem 0 0;padding-left:1.25rem;line-height:1.8">
+          <li>
+            Banto を <strong>0182 の入った版</strong>に上げ、Banto の管理画面 → ショップの設定 → お知らせの文面 で<strong>「お支払いのお願いを送る」を ON</strong> にします（OFF のあいだは Banto が知らせを出さないので、手代も送りません）。
+          </li>
+          <li>
+            Banto の管理画面 → 連携 → 手代 の「購読する出来事」に <code>checkout.payment_pending</code> を入れます（この版より前からつないでいるショップは、選び直すかつなぎ直します）。
+          </li>
+          <li>
+            Banto の「メール通知」で「注文のメールを送らない（外部プラグインに任せる）」に印を付けているショップは、Banto からはお支払いのお願いのメールが出ません。印を付けていないショップで手代も送ると、2 通届きます。
+          </li>
+        </ol>
+        <p class="hint">
+          リンク（{"{{payment_link}}"}）を開くと、お客様はお支払いに進むか、お申し込みを取りやめられます。リンクは宛先と同じく、つないだときに <code>orders:contact</code> を許したつなぎ方にだけ Banto が渡します。もう払った・取りやめた・期限が切れたお申し込みには送りません。
+        </p>
+      </div>
       {on.length > 0 ? (
         <p class="hint">
           手代が送る種類: {on.map((t) => noticeLabel(t.kind)).join("・")}。Banto の同梱の「メール通知」と重なっていないか、確かめてください。
@@ -205,6 +223,7 @@ export function NoticesPage(props: { s: string; templates: NoticeTemplate[]; rea
 const PLACEHOLDER_HELP: Record<NoticeGroup, string> = {
   order: "お名前・ショップ・注文番号・合計・ご注文の確認ページ・お支払い方法・問い合わせ先・明細・発送のお問い合わせ番号",
   tryon: "お名前・ショップ・受付番号・店舗の名前・取り置きの期限・来店予定日の行（受付だけ）・問い合わせ先・お店のトップ・品目・店舗の案内（住所・電話・営業時間・近い臨時休業）",
+  payment: "お名前・ショップ・お支払い金額・お支払いの期限・支払いの種類・お支払いに進む・取りやめる画面のリンク・問い合わせ先・品目と合計",
 };
 
 export function NoticeEditPage(props: { s: string; template: NoticeTemplate; settings: ShopSettings; shopName: string; shopSlug: string; bantoOrigin: string; now: number; storeRead: boolean; ready: NoticeReadiness; errors: string[]; msg?: string }) {
@@ -262,14 +281,18 @@ export function NoticeEditPage(props: { s: string; template: NoticeTemplate; set
             </div>
           ) : null}
           <p class="hint">
-            「試しに送る」は、いま画面にある文面（保存はしません）を見本の{group === "tryon" ? "申し込み" : "注文"}で作り、
+            「試しに送る」は、いま画面にある文面（保存はしません）を見本の{group === "tryon" ? "申し込み" : group === "payment" ? "お申し込み（未払い）" : "注文"}で作り、
             {props.settings.operator_email ? <strong>{props.settings.operator_email}</strong> : <a href={`/admin/settings${q(props.s)}`}>設定の「運営者への知らせ」の宛先</a>}
             に 1 通送ります（お客様には送りません。件名の頭に [試し送り]）。
           </p>
           {group === "order" ? (
             <p class="hint">ご注文の確認ページ（{"{{order_url}}"}）は Banto の注文照会です。ゲストは注文番号が入った状態で開き、メールアドレスを入れて確かめます。発送の追跡番号もここに出ます。</p>
-          ) : (
+          ) : group === "tryon" ? (
             <p class="hint">お店のトップ（{"{{shop_url}}"}）はボタンやリンクの先に使えます。お申し込みの確認・延長は、会員のお客様なら Banto の会員ページでできます。</p>
+          ) : (
+            <p class="hint">
+              お支払いのリンク（{"{{payment_link}}"}）は必ず入れます。ボタンの先（{"[[お支払いに進む]]({{payment_link}})"}）にも使えます。期限（{"{{pay_until}}"}）は Banto の運営者の時間帯の「11月28日（土）15:00」の形です。
+            </p>
           )}
           <div class="row" style="margin-top:1rem">
             <button name="op" value="save">
@@ -289,7 +312,7 @@ export function NoticeEditPage(props: { s: string; template: NoticeTemplate; set
       </form>
       <h2 style="margin-top:1.5rem">見本</h2>
       <p class="small muted">
-        {group === "tryon" ? "見本の申し込み（受付番号 2001・2 品・渋谷店）" : "見本の注文（番号 1001・2 品・値引きと送料あり）"}で作っています。件名: {sample.subject}
+        {group === "tryon" ? "見本の申し込み（受付番号 2001・2 品・渋谷店）" : group === "payment" ? "見本のお申し込み（コンビニ払い・1 品・¥9,400）" : "見本の注文（番号 1001・2 品・値引きと送料あり）"}で作っています。件名: {sample.subject}
       </p>
       {sample.html ? (
         <iframe class="mail-preview" title="メールの見本" sandbox="" srcdoc={sample.html} />

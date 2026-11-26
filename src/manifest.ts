@@ -21,6 +21,7 @@ export const EVENTS = [
   "checkout.abandoned",
   "tryon.requested", // 取引の知らせ: お店で試着のお申し込みの受付
   "tryon.updated", // 取引の知らせ: お店で試着の取り置き・期限の前日・延長・取り消し
+  "checkout.payment_pending", // 取引の知らせ: KOMOJU の未払いのお申し込みのお支払いのお願い（Banto 0181）
 ] as const;
 
 export const SCOPES = [
